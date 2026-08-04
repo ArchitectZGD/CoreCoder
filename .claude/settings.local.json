@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(mysql --version)",
+      "Bash(psql --version)",
+      "Bash(systemctl status *)",
+      "Bash(docker exec *)",
+      "Bash(pip install *)",
+      "Bash(python *)"
+    ]
+  }
+}
