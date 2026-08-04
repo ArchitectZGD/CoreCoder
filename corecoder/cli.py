@@ -14,6 +14,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from .agent import Agent
 from .llm import LLM, LiteLLM
 from .config import Config
+from .logstore import LogStore
 from .session import save_session, load_session, list_sessions
 from . import __version__
 
@@ -70,7 +71,10 @@ def main():
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
-    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens)
+    logstore = LogStore()
+    session_id = logstore.new_session(config.model)
+    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens,
+                  logstore=logstore, session_id=session_id)
 
     # resume saved session
     if args.resume:

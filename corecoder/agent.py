@@ -11,12 +11,18 @@ which means it's done working and ready to report back.
 
 import concurrent.futures
 import inspect
-from .llm import LLM
-from .tools import ALL_TOOLS
-from .tools.base import Tool
-from .tools.agent import AgentTool
-from .prompt import system_prompt
+from typing import TYPE_CHECKING
+
+from tools.logging import AgentLogger
 from .context import ContextManager
+from .llm import LLM
+from .prompt import system_prompt
+from .tools import ALL_TOOLS
+from .tools.agent import AgentTool
+from .tools.base import Tool
+
+if TYPE_CHECKING:
+    from .logstore import LogStore
 
 
 class Agent:
@@ -26,6 +32,8 @@ class Agent:
         tools: list[Tool] | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        logstore: "LogStore | None" = None,
+        session_id: str = "",
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -34,6 +42,8 @@ class Agent:
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
         self._system = system_prompt(self.tools)
+        self.log = AgentLogger(logstore, session_id)
+        self._turn_id = 0
 
         # wire up sub-agent capability
         for t in self.tools:
@@ -48,10 +58,15 @@ class Agent:
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
+        self._turn_id += 1
+        tid = self._turn_id
+
+        self.log.chat_start(tid, len(user_input), len(self.messages))
+
         self.messages.append({"role": "user", "content": user_input})
         self.context.maybe_compress(self.messages, self.llm)
 
-        for _ in range(self.max_rounds):
+        for round_num in range(self.max_rounds):
             resp = self.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
@@ -61,7 +76,11 @@ class Agent:
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
                 self.messages.append(resp.message)
+                self.log.chat_done(tid, round_num, len(resp.content))
                 return resp.content
+
+            self.log.tool_calls(tid, round_num,
+                                 [tc.name for tc in resp.tool_calls])
 
             # tool calls -> execute (parallel when multiple, like Claude Code's
             # StreamingToolExecutor which runs independent tools concurrently)
@@ -72,7 +91,7 @@ class Agent:
                     tc = resp.tool_calls[0]
                     if on_tool:
                         on_tool(tc.name, tc.arguments)
-                    result = self._exec_tool(tc)
+                    result = self._exec_tool(tc, tid, round_num)
                     self.messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -80,7 +99,8 @@ class Agent:
                     })
                 else:
                     # parallel execution for multiple tool calls
-                    results = self._exec_tools_parallel(resp.tool_calls, on_tool)
+                    results = self._exec_tools_parallel(
+                        resp.tool_calls, on_tool, tid, round_num)
                     for tc, result in zip(resp.tool_calls, results):
                         self.messages.append({
                             "role": "tool",
@@ -88,8 +108,6 @@ class Agent:
                             "content": result,
                         })
             except KeyboardInterrupt:
-                # Ctrl+C mid-execution would leave the assistant tool_calls
-                # message without replies, poisoning the next request; backfill
                 self._answer_pending_tool_calls(resp.tool_calls)
                 raise
 
@@ -98,35 +116,39 @@ class Agent:
 
         return "(reached maximum tool-call rounds)"
 
-    def _exec_tool(self, tc) -> str:
+    def _exec_tool(self, tc, turn_id: int = 0, round_num: int = 0) -> str:
         """Execute a single tool call, returning the result string."""
         tool = self._tool_by_name.get(tc.name)
         if tool is None:
+            self.log.tool_error(turn_id, round_num, tc.name,
+                                 f"Unknown tool: {tc.name}")
             return f"Error: unknown tool '{tc.name}'"
-        # validate arguments first so a TypeError raised *inside* the tool isn't
-        # mislabelled as a bad-arguments error from the caller
+
+        self.log.tool_start(turn_id, round_num, tc.name, tc.arguments)
+
         try:
             inspect.signature(tool.execute).bind(**tc.arguments)
         except TypeError as e:
+            self.log.tool_error(turn_id, round_num, tc.name, str(e))
             return f"Error: bad arguments for {tc.name}: {e}"
         try:
-            return tool.execute(**tc.arguments)
+            result = tool.execute(**tc.arguments)
+            self.log.tool_result(turn_id, round_num, tc.name, len(result))
+            return result
         except Exception as e:
+            self.log.tool_error(turn_id, round_num, tc.name, str(e))
             return f"Error executing {tc.name}: {e}"
 
-    def _exec_tools_parallel(self, tool_calls, on_tool=None) -> list[str]:
-        """Run multiple tool calls concurrently using threads.
-
-        This is inspired by Claude Code's StreamingToolExecutor which starts
-        executing tools while the model is still generating.  We simplify to:
-        when the model returns N tool calls at once, run them in parallel.
-        """
+    def _exec_tools_parallel(self, tool_calls, on_tool=None,
+                             turn_id: int = 0, round_num: int = 0) -> list[str]:
+        """Run multiple tool calls concurrently using threads."""
         for tc in tool_calls:
             if on_tool:
                 on_tool(tc.name, tc.arguments)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(self._exec_tool, tc) for tc in tool_calls]
+            futures = [pool.submit(self._exec_tool, tc, turn_id, round_num)
+                       for tc in tool_calls]
             return [f.result() for f in futures]
 
     def _answer_pending_tool_calls(self, tool_calls):
