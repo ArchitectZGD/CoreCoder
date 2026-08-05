@@ -1,6 +1,7 @@
 """Tool registry."""
 
 from .bash import BashTool
+from .now import NowTool
 from .read import ReadFileTool
 from .write import WriteFileTool
 from .edit import EditFileTool
@@ -16,6 +17,7 @@ ALL_TOOLS = [
     GlobTool(),
     GrepTool(),
     AgentTool(),
+    NowTool(),
 ]
 
 

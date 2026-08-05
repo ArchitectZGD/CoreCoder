@@ -14,7 +14,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from .agent import Agent
 from .llm import LLM, LiteLLM
 from .config import Config
-from .logstore import LogStore
+from tools.log.logstore import LogStore
 from .session import save_session, load_session, list_sessions
 from . import __version__
 

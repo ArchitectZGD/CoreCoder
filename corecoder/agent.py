@@ -11,10 +11,11 @@ which means it's done working and ready to report back.
 
 import concurrent.futures
 import inspect
+import json
 from typing import TYPE_CHECKING
 
-from tools.logging import AgentLogger
-from .context import ContextManager
+from tools.log.logging import AgentLogger
+from .context import ContextManager, estimate_tokens
 from .llm import LLM
 from .prompt import system_prompt
 from .tools import ALL_TOOLS
@@ -22,7 +23,7 @@ from .tools.agent import AgentTool
 from .tools.base import Tool
 
 if TYPE_CHECKING:
-    from .logstore import LogStore
+    from tools.log.logstore import LogStore
 
 
 class Agent:
@@ -56,17 +57,38 @@ class Agent:
     def _tool_schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools]
 
+    def _append_message(self, msg: dict, round_num: int = 0):
+        """Append a message to history and persist it."""
+        role = msg.get("role", "")
+        if role == "assistant" and msg.get("tool_calls"):
+            content = json.dumps(msg, ensure_ascii=False)
+        else:
+            content = msg.get("content", "") or ""
+        self.log.message(self._turn_id, round_num,
+                          len(self.messages), role, content,
+                          msg.get("tool_call_id", ""))
+        self.messages.append(msg)
+
+    def _maybe_compress(self, round_num: int):
+        before_tokens = estimate_tokens(self.messages)
+        before_msgs = len(self.messages)
+        if self.context.maybe_compress(self.messages, self.llm):
+            self.log.compress(self._turn_id, round_num,
+                              before_tokens, estimate_tokens(self.messages),
+                              before_msgs, len(self.messages))
+
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
         self._turn_id += 1
         tid = self._turn_id
 
-        self.log.chat_start(tid, len(user_input), len(self.messages))
-
-        self.messages.append({"role": "user", "content": user_input})
-        self.context.maybe_compress(self.messages, self.llm)
+        self._append_message({"role": "user", "content": user_input})
+        self._maybe_compress(round_num=0)
 
         for round_num in range(self.max_rounds):
+            self.log.chat_request(tid, round_num,
+                                  self._full_messages(),
+                                  self._tool_schemas())
             resp = self.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
@@ -75,16 +97,13 @@ class Agent:
 
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
-                self.messages.append(resp.message)
+                self._append_message(resp.message, round_num)
                 self.log.chat_done(tid, round_num, len(resp.content))
                 return resp.content
 
-            self.log.tool_calls(tid, round_num,
-                                 [tc.name for tc in resp.tool_calls])
-
             # tool calls -> execute (parallel when multiple, like Claude Code's
             # StreamingToolExecutor which runs independent tools concurrently)
-            self.messages.append(resp.message)
+            self._append_message(resp.message, round_num)
 
             try:
                 if len(resp.tool_calls) == 1:
@@ -92,27 +111,27 @@ class Agent:
                     if on_tool:
                         on_tool(tc.name, tc.arguments)
                     result = self._exec_tool(tc, tid, round_num)
-                    self.messages.append({
+                    self._append_message({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result,
-                    })
+                    }, round_num)
                 else:
                     # parallel execution for multiple tool calls
                     results = self._exec_tools_parallel(
                         resp.tool_calls, on_tool, tid, round_num)
                     for tc, result in zip(resp.tool_calls, results):
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": result,
-                        })
+                        }, round_num)
             except KeyboardInterrupt:
                 self._answer_pending_tool_calls(resp.tool_calls)
                 raise
 
             # compress if tool outputs are big
-            self.context.maybe_compress(self.messages, self.llm)
+            self._maybe_compress(round_num)
 
         return "(reached maximum tool-call rounds)"
 
@@ -133,7 +152,6 @@ class Agent:
             return f"Error: bad arguments for {tc.name}: {e}"
         try:
             result = tool.execute(**tc.arguments)
-            self.log.tool_result(turn_id, round_num, tc.name, len(result))
             return result
         except Exception as e:
             self.log.tool_error(turn_id, round_num, tc.name, str(e))
@@ -161,7 +179,7 @@ class Agent:
         answered = {m.get("tool_call_id") for m in self.messages if m.get("role") == "tool"}
         for tc in tool_calls:
             if tc.id not in answered:
-                self.messages.append({
+                self._append_message({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": "[interrupted]",

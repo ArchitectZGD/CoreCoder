@@ -7,7 +7,18 @@
       "Bash(systemctl status *)",
       "Bash(docker exec *)",
       "Bash(pip install *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(mysql *)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder log --oneline -20 -- tools/log/)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder log --oneline -8)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 5c6cc55 --stat)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 5c6cc55 -- tools/log/logstore.py)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder log --oneline --all --follow -- tools/log/logstore.py)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 5e21b0c --stat)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 00c1ae4 --stat)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder status --short)",
+      "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 5e21b0c -- corecoder/agent.py)",
+      "Bash(git *)"
     ]
   }
 }
