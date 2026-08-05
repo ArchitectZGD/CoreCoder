@@ -18,7 +18,8 @@
       "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 00c1ae4 --stat)",
       "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder status --short)",
       "Bash(git -c safe.directory=/mnt/d/code/py_projects/CoreCoder show 5e21b0c -- corecoder/agent.py)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "WebSearch"
     ]
   }
 }
